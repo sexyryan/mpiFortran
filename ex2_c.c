@@ -6,12 +6,12 @@
 
      int main(int argc, char **argv)
      {
-         const ptrdiff_t L = 32, M = 32;
+         const ptrdiff_t L = 8192, M =8192;
          fftw_plan plan;
          fftw_complex *data ;
          ptrdiff_t alloc_local, local_L, local_L_start, i, j, ii;
          int proc_id, nproc;
-         double xx, yy, rr, r2, t0, t1, t2, t3, tplan, texec;
+         double xx, yy, rr, r2, t0, t1, t2, t3, tplan, texec,tmid;
          const double amp = 0.25;
          /* Initialize */
          MPI_Init(&argc, &argv);
@@ -42,7 +42,7 @@
             else
             {
               data[i*local_L + j][0] = 0.;
-              data[i*local_L + j][1] = 0.;
+              data[i*local_L + j][1] = 1.;
             }
          }
          /* compute transforms, in-place, as many times as desired */
@@ -51,19 +51,13 @@
          t3 = MPI_Wtime();
          /* Print results */
          tplan = t1 - t0;
-         texec = t2 - t1;
-         if (proc_id == 0) {
-           printf(" T_plan = %f, T_exec = %f \n",tplan,texec);
-         }
-
-         printf("check\n");
-         printf("%f",data);
-
+         tmid = t2 - t1;
+         texec = t3 - t2;
+         if (proc_id == 0) printf(" T_plan = %f, T_mid = %f, T_exec = %f \n",tplan,tmid,texec);
          /* deallocate and destroy plans */
          fftw_destroy_plan(plan);
          fftw_mpi_cleanup();
          fftw_free ( data );
          MPI_Finalize();
-
-         /*To compile : mpicc -o ex2 ex2_c.c -lm -lfftw3 -lfftw3_mpi*/
      }
+/*to compile mpicc -o ex2_c ex2_c.c -lfftw3_mpi -lfftw3 -lm*/
