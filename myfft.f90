@@ -237,7 +237,7 @@ CONTAINS
       end do
     end do
 
-    CALL dfftw_execute_r2r(plan,in,in)
+    CALL fftw_mpi_execute_r2r(plan,in,in)
 !    in = laminv * in
     do j = 1, local_M
       do i = 1, nn-1
@@ -245,7 +245,7 @@ CONTAINS
       end do
     end do
 
-    CALL dfftw_execute_r2r(plan,in,in)
+    CALL fftw_mpi_execute_r2r(plan,in,in)
     ctci =  in
 
 
@@ -264,7 +264,7 @@ CONTAINS
       end do
     end do
 
-    CALL dfftw_execute_r2r(plan,in,in)
+    CALL fftw_mpi_execute_r2r(plan,in,in)
 
 !    in = lam1i(:,:,1) * in / normalize
     do j = 1, local_M
@@ -273,7 +273,7 @@ CONTAINS
       end do
     end do
 
-    CALL dfftw_execute_r2r(plan,in,in)
+    CALL fftw_mpi_execute_r2r(plan,in,in)
     ainv = in
 
 !    in = omega
@@ -295,7 +295,7 @@ CONTAINS
       end do
     end do
 
-    CALL dfftw_execute_r2r(plan_ddti,in_ddti,in_ddti)
+    CALL fftw_mpi_execute_r2r(plan_ddti,in_ddti,in_ddti)
 
 !    in_ddti = laminv_ddti * in_ddti
     do j = 1, local_M
@@ -304,7 +304,7 @@ CONTAINS
       end do
     end do
 
-    CALL dfftw_execute_r2r(plan_ddti,in_ddti,in_ddti)
+    CALL fftw_mpi_execute_r2r(plan_ddti,in_ddti,in_ddti)
     ddti = in_ddti
 
   END FUNCTION ddti
