@@ -39,7 +39,7 @@ MODULE myfft
 
 !   Declare a type(C_PTR) :: p to hold the return value from FFTW’s allocation routine.
 !   Set p = fftw_alloc_real(sz) for a real array, or p = fftw_alloc_complex(sz) for a complex array.
-    TYPE(C_PTR) :: forward, inverse, forward_ddti
+    TYPE(C_PTR) :: plan, inverse, plan_ddti
     TYPE(C_PTR) :: indata, indata_ddti
 
 !   Because all sizes in the MPI FFTW interface are declared as ptrdiff_t in C, you should use integer(C_INTPTR_T) in Fortran (see FFTW Fortran type reference).
@@ -75,14 +75,11 @@ CONTAINS
 !    ALLOCATE( intfac1(mm-1,nn-1,mgridlev), intfac2(mm-1,nn-1,mgridlev), intfac3(mm-1,nn-1,mgridlev)  )
     ALLOCATE( in_ddti(mm,nn), laminv_ddti(mm,nn)  )
 
-
 !   Initialize for MPI
     CALL MPI_INIT(ierr)
     CALL MPI_COMM_SIZE(MPI_COMM_WORLD, nproc, ierr)
     CALL MPI_COMM_RANK(MPI_COMM_WORLD, myid, ierr)
     CALL FFTW_MPI_INIT()
-
-
 
 !   Get local data size and allocate (note dimensin reversal)
 !   Because you need to call the ‘local_size’ function to find out how much space to allocate, and this may be larger than the local portion of the array (see MPI Data Distribution),
@@ -90,7 +87,7 @@ CONTAINS
 !   (Coincidentally, this also provides the best performance by guaranteeding proper data alignment.)
 
     alloc_local = fftw_mpi_local_size_2d(mm-1, nn-1, MPI_COMM_WORLD, local_M, local_j_offset)
-    forward = fftw_alloc_real(alloc_local)
+    indata = fftw_alloc_real(alloc_local)
 !   Associate your pointer arr with the allocated memory p using the standard c_f_pointer subroutine: call c_f_pointer(p, arr, [...dimensions...]),
 !   where [...dimensions...]) are an array of the dimensions of the array (in the usual Fortran order).
 !   e.g. call c_f_pointer(p, arr, [L,M,N]) for an L × M × N array.
@@ -98,7 +95,7 @@ CONTAINS
     CALL c_f_pointer(indata, in, [nn-1,local_M])
 
     alloc_local_ddti = fftw_mpi_local_size_2d(mm, nn, MPI_COMM_WORLD, local_M_ddti, local_j_offset_ddti)
-    forward_ddti = fftw_alloc_real(alloc_local_ddti)
+    indata_ddti = fftw_alloc_real(alloc_local_ddti)
     CALL c_f_pointer(indata_ddti, in_ddti, [nn,local_M_ddti])
 
 
@@ -115,8 +112,8 @@ CONTAINS
 !   To perform a two-dimensional L × M that is an REDFT10 (DCT-II) in the first dimension and an RODFT10 (DST-II) in the second dimension
 !   plan = fftw_mpi_plan_r2r_2d(L, M, data, data, MPI_COMM_WORLD, FFTW_REDFT10, FFTW_RODFT10, FFTW_MEASURE);
 
-    forward = fftw_mpi_plan_r2r_2d(mm-1, nn-1, in, in, MPI_COMM_WORLD, FFTW_RODFT00, FFTW_RODFT00, FFTW_EXHAUSTIVE)
-    forward_ddti = fftw_mpi_plan_r2r_2d(mm, nn, in_ddti, in_ddti, MPI_COMM_WORLD, FFTW_RODFT00, FFTW_RODFT00, FFTW_EXHAUSTIVE)
+    plan = fftw_mpi_plan_r2r_2d(mm-1, nn-1, in, in, MPI_COMM_WORLD, FFTW_RODFT00, FFTW_RODFT00, FFTW_EXHAUSTIVE)
+    plan_ddti = fftw_mpi_plan_r2r_2d(mm, nn, in_ddti, in_ddti, MPI_COMM_WORLD, FFTW_RODFT00, FFTW_RODFT00, FFTW_EXHAUSTIVE)
 
 
 
@@ -170,28 +167,27 @@ CONTAINS
   SUBROUTINE myfft_destroy_fft
     IMPLICIT NONE
 
-
-    DEALLOCATE( lam,in, laminv, viscfac,vfac,con1,con2 )
+    CALL fftw_destroy_plan(plan)
+    DEALLOCATE( lam, laminv, viscfac,vfac,con1,con2 )
 !    deallocate( intfac1,intfac2,intfac3 )
     DEALLOCATE( lam1, lam1i, lam1inv )
-    DEALLOCATE( in_ddti, laminv_ddti )
+    CALL fftw_free(indata)
 
-    CALL fftw_destroy_plan(forward)
-    CALL fftw_destroy_plan(forward_ddti)
+    CALL fftw_destroy_plan(plan_ddti)
+    DEALLOCATE( laminv_ddti )
+    CALL fftw_free(indata_ddti)
+
     CALL fftw_mpi_cleanup()
 !   When you are done using the array, deallocate the memory by call fftw_free(p) on p.
-    CALL fftw_free(indata)
-    CALL fftw_free(indata_ddti)
     CALL mpi_finalize(ierr)
-
 
   END SUBROUTINE myfft_destroy_fft
 ! *****************************************************************************************
   FUNCTION dst( psi )
     IMPLICIT NONE
-    REAL(KIND(0.D0)) :: psi(:,:)
-    REAL(KIND(0.D0)) :: dst(2:mm,2:nn)
-
+    REAL(C_DOUBLE) :: psi(:,:)
+    REAL(C_DOUBLE) :: dst(2:mm,2:nn)
+    integer :: i, j
     ! discrete sine transform
     ! careful...two calls of dst need to be divided by "normalize"
     ! to return original vector
@@ -200,64 +196,115 @@ CONTAINS
     !The various r2r plans should use fftw_execute_r2r. Fortunately, if you use the wrong one you will get a compile-time type-mismatch error (unlike legacy Fortran).
     !However, note that in the MPI interface these functions are changed: fftw_execute_dft becomes fftw_mpi_execute_dft, etcetera. See Using MPI Plans.
     !void fftw_mpi_execute_r2r(fftw_plan p, double *in, double *out);
-    in  = psi
-    CALL fftw_mpi_execute_r2r(forward,in,in)
+
+    !for serial, we can save the matrix in an easy way.
+    !in  = psi
+    !For mpi version, we need to initialize data to some function my_function(i,j)
+
+    do j = 1, local_M
+      do i = 1, nn-1
+      in(i, j) = psi(i, j + local_j_offset)
+      end do
+    end do
+
+    CALL fftw_mpi_execute_r2r(plan,in,in)
     dst = in
 
   END FUNCTION dst
 ! *****************************************************************************************
-FUNCTION idst( psi )
-    IMPLICIT NONE
-    REAL(KIND(0.D0)) :: psi(:,:)
-    REAL(KIND(0.D0)) :: idst(2:mm,2:nn)
+!FUNCTION idst( psi )
+!    IMPLICIT NONE
+!    REAL(KIND(0.D0)) :: psi(:,:)
+!    REAL(KIND(0.D0)) :: idst(2:mm,2:nn)
 
 
-    in  = psi / normalize
-    CALL fftw_mpi_execute_r2r(forward,in,in)
-    idst = in
+!    in  = psi / normalize
+!    CALL fftw_mpi_execute_r2r(plan,in,in)
+!    idst = in
 
-END FUNCTION idst
+!END FUNCTION idst
 ! *****************************************************************************************
   FUNCTION ctci( omega )
     IMPLICIT NONE
-    REAL(KIND(0.D0)) :: omega(:,:)
-    REAL(KIND(0.D0)) :: ctci(2:mm,2:nn)
+    REAL(C_DOUBLE) :: omega(:,:)
+    REAL(C_DOUBLE) :: ctci(2:mm,2:nn)
+    integer :: i, j
 
-    in =  omega
-    !CALL dfftw_execute_r2r(forward,in,in)
-    in = dst(in)
-    in = laminv * in
-    !CALL dfftw_execute_r2r(forward,in,in)
-    in = dst(in)
+!   in =  omega
+    do j = 1, local_M
+      do i = 1, nn-1
+      in(i, j) = omega(i, j + local_j_offset)
+      end do
+    end do
+
+    CALL dfftw_execute_r2r(plan,in,in)
+!    in = laminv * in
+    do j = 1, local_M
+      do i = 1, nn-1
+      in(i, j) = laminv(i, j + local_j_offset) * in(i, j + local_j_offset)
+      end do
+    end do
+
+    CALL dfftw_execute_r2r(plan,in,in)
     ctci =  in
+
 
   END FUNCTION ctci
 ! *****************************************************************************************
   FUNCTION ainv( omega )
     IMPLICIT NONE
-    REAL(KIND(0.D0)) :: omega(:,:)
-    REAL(KIND(0.D0)) :: ainv(2:mm,2:nn)
+    REAL(C_DOUBLE) :: omega(:,:)
+    REAL(C_DOUBLE) :: ainv(2:mm,2:nn)
+    integer :: i, j
 
-    in = omega
-    pre_ainv = dst (in)
-    pre_ainv = pre_ainv * lam1i(:,:,1)
-    ainv = idst (pre_ainv)
+!   in = omega
+    do j = 1, local_M
+      do i = 1, nn-1
+      in(i, j) = omega(i, j + local_j_offset)
+      end do
+    end do
+
+    CALL dfftw_execute_r2r(plan,in,in)
+
+!    in = lam1i(:,:,1) * in / normalize
+    do j = 1, local_M
+      do i = 1, nn-1
+      in(i, j) = ( lam1i(i, j + local_j_offset, 1) * in(i, j + local_j_offset) ) / normalize
+      end do
+    end do
+
+    CALL dfftw_execute_r2r(plan,in,in)
+    ainv = in
+
+!    in = omega
+!    pre_ainv = dst (in)
+!    pre_ainv = pre_ainv * lam1i(:,:,1)
+!    ainv = idst (pre_ainv)
 
   END FUNCTION ainv
 ! *****************************************************************************************
   FUNCTION ddti( phi )
     IMPLICIT NONE
-    REAL(KIND(0.D0)) :: phi(:,:)
-    REAL(KIND(0.D0)) :: ddti(1:mm,1:nn)
+    REAL(C_DOUBLE) :: phi(:,:)
+    REAL(C_DOUBLE) :: ddti(1:mm,1:nn)
+    integer :: i, j
+!    in_ddti = phi
+    do j = 1, local_M
+      do i = 1, nn
+      in_ddti(i, j) = phi(i, j + local_j_offset)
+      end do
+    end do
 
-    in_ddti = phi
+    CALL dfftw_execute_r2r(plan_ddti,in_ddti,in_ddti)
 
-    !CALL dfftw_execute_r2r(forward_ddti,in_ddti,in_ddti)
-    in_ddti = dst(in_ddti)
-    in_ddti = laminv_ddti * in_ddti
-    !CALL dfftw_execute_r2r(forward_ddti,in_ddti,in_ddti)
-    in_ddti = dst(in_ddti)
+!    in_ddti = laminv_ddti * in_ddti
+    do j = 1, local_M
+      do i = 1, nn
+      in_ddti(i, j) = laminv_ddti(i, j + local_j_offset) * in_ddti(i, j + local_j_offset)
+      end do
+    end do
 
+    CALL dfftw_execute_r2r(plan_ddti,in_ddti,in_ddti)
     ddti = in_ddti
 
   END FUNCTION ddti
