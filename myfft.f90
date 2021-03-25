@@ -41,14 +41,19 @@ MODULE myfft
 !   Because all sizes in the MPI FFTW interface are declared as ptrdiff_t in C, you should use integer(C_INTPTR_T) in Fortran (see FFTW Fortran type reference).
     INTEGER(C_INTPTR_T) :: id, ix, iy
     INTEGER(C_INTPTR_T) :: mm, nn
-    INTEGER(C_INTPTR_T) :: alloc_local, local_M, local_j_offset
-    INTEGER(C_INTPTR_T) :: alloc_local_ddti, local_M_ddti, local_j_offset_ddti
+    INTEGER(C_INTPTR_T) :: alloc_local, local_M, local_M_n, local_j_offset
+    INTEGER(C_INTPTR_T) :: alloc_local_ddti, local_M_ddti,local_M_ddti_n, local_j_offset_ddti
 
-    integer, allocatable :: recv_counts(:), recv_offsets(:)
-    integer, allocatable :: recv_counts_ddti(:), recv_offsets_ddti(:)
+
 !   In writing the transform pair, we have used the fact that the sine transform can be normalized so that it is identical to its inverse.
     REAL(C_DOUBLE) :: normalize
 
+
+    integer,allocatable:: rcounts(:), rcounts_n(:) ! array of local_M's (for mpi_gatrherv)
+    integer,allocatable:: displs(:), displs_n(:)  ! array of local_j_offset (for mpi_gatherv)
+
+    integer,allocatable:: rcounts_ddti(:), rcounts_ddti_n(:) ! array of local_M's (for mpi_gatrherv)
+    integer,allocatable:: displs_ddti(:), displs_ddti_n(:)  ! array of local_j_offset (for mpi_gatherv)
 CONTAINS
 
 ! *****************************************************************************************
@@ -62,20 +67,9 @@ CONTAINS
     REAL(C_DOUBLE)   :: del2, del22, normalize_ddti
     REAL(C_DOUBLE)   :: lam_ddti(m,n)
 
-    !might be over declared, but still worth to try
-    REAL(C_DOUBLE), POINTER :: in(:,:), in_ddti(:,:)
-    REAL(C_DOUBLE), POINTER :: out(:,:), out_ddti(:,:)
-    REAL(C_DOUBLE), POINTER :: in_all(:,:), in_all_ddti(:,:)
-    REAL(C_DOUBLE), POINTER :: out_all(:,:), out_all_ddti(:,:)
-    INTEGER(C_INTPTR_T) :: id, ix, iy
-    INTEGER(C_INTPTR_T) :: mm, nn
-    INTEGER(C_INTPTR_T) :: alloc_local, local_M, local_j_offset
-    INTEGER(C_INTPTR_T) :: alloc_local_ddti, local_M_ddti, local_j_offset_ddti
-    integer, allocatable :: recv_counts(:), recv_offsets(:)
-    integer, allocatable :: recv_counts_ddti(:), recv_offsets_ddti(:)
-
     mm = m
     nn = n
+
     ALLOCATE( viscfac(mgridlev), con1(mgridlev), con2(mgridlev) )
     ALLOCATE( vfac(mgridlev) )
     ALLOCATE( laminv(mm-1,nn-1) )
@@ -86,37 +80,10 @@ CONTAINS
 !    ALLOCATE( intfac1(mm-1,nn-1,mgridlev), intfac2(mm-1,nn-1,mgridlev), intfac3(mm-1,nn-1,mgridlev)  )
     ALLOCATE( laminv_ddti(mm,nn)  )
 
-    allocate(recv_counts(nproc), recv_offsets(nproc))
     allocate(in_all(mm-1 ,nn-1), in_all_ddti(mm , nn))
     allocate(out_all(mm-1 ,nn-1), out_all_ddti(mm , nn))
 
-    alloc_local = fftw_mpi_local_size_2d(mm-1, nn-1, MPI_COMM_WORLD, local_M, local_j_offset)
-    cdata = fftw_alloc_real(alloc_local)
-    CALL c_f_pointer(cdata, in, [nn-1,local_M])
 
-
-
-    plan = fftw_mpi_plan_r2r_2d &
-    & (mm-1, nn-1, in, out, MPI_COMM_WORLD, FFTW_RODFT00, FFTW_RODFT00, FFTW_ESTIMATE)
-
-    plan_ddti = fftw_mpi_plan_r2r_2d(mm, nn, in_ddti, in_ddti,&
-    & MPI_COMM_WORLD, FFTW_RODFT00, FFTW_RODFT00, FFTW_EXHAUSTIVE)
-
-    if ((.not. c_associated(plan)) .or. (.not. c_associated(plan_ddti))) then
-       write(*,*) "plan creation error!!"
-       stop
-    end if
-
-    ! (just preparation for print of whole input/result data)
-     call MPI_Allgather &
-       & (int(local_M), 1, MPI_INTEGER, recv_counts, 1, MPI_INTEGER, MPI_COMM_WORLD, ierr)
-     do id = 1, nproc
-        recv_counts(id) = recv_counts(id) * int(nn-1)
-     end do
-     recv_offsets(1) = 0
-     do id = 2, nproc
-        recv_offsets(id) = recv_offsets(id - 1) + recv_counts(id - 1)
-     end do
 
 
     normalize_ddti = 4.d0*REAL( (mm+1)*(nn+1) )
@@ -164,26 +131,6 @@ CONTAINS
        END DO
     END DO
 
-          !   Get local data size and allocate (note dimensin reversal)
-          !   Because you need to call the ‘local_size’ function to find out how much space to allocate, and this may be larger than the local portion of the array (see MPI Data Distribution),
-          !   you should always allocate your arrays dynamically using FFTW’s allocation routines as described in Allocating aligned memory in Fortran.
-          !   (Coincidentally, this also provides the best performance by guaranteeding proper data alignment.)
-          !   Associate your pointer arr with the allocated memory p using the standard c_f_pointer subroutine: call c_f_pointer(p, arr, [...dimensions...]),
-          !   where [...dimensions...]) are an array of the dimensions of the array (in the usual Fortran order).
-          !   e.g. call c_f_pointer(p, arr, [L,M,N]) for an L × M × N array.
-          !   (Alternatively, you can omit the dimensions argument if you specified the shape explicitly when declaring arr.) You can now use arr as a usual multidimensional array.
-
-
-
-              !call MPI_Allgather &
-              !   & (int(local_M_ddti), 1, MPI_INTEGER, recv_counts_ddti, 1, MPI_INTEGER, MPI_COMM_WORLD, ierr)
-               !do id = 1, nproc
-            !      recv_counts_ddti(id) = recv_counts_ddti(id) * int(nn)
-            !   end do
-            !   recv_offsets(1) = 0
-            !   do id = 2, nproc
-            !      recv_offsets_ddti(id) = recv_offsets_ddti(id - 1) + recv_counts_ddti(id - 1)
-            !   end do
 
 
 
@@ -195,19 +142,11 @@ CONTAINS
   SUBROUTINE myfft_destroy_fft
     IMPLICIT NONE
 
-    CALL fftw_destroy_plan(plan)
     DEALLOCATE( lam, laminv, viscfac,vfac,con1,con2 )
 !    deallocate( intfac1,intfac2,intfac3 )
     DEALLOCATE( lam1, lam1i, lam1inv )
-    CALL fftw_free(cdata)
 
-    CALL fftw_destroy_plan(plan_ddti)
     DEALLOCATE( laminv_ddti )
-    CALL fftw_free(cdata_ddti)
-
-    CALL fftw_mpi_cleanup()
-!   When you are done using the array, deallocate the memory by call fftw_free(p) on p.
-    CALL mpi_finalize(ierr)
 
   END SUBROUTINE myfft_destroy_fft
 ! *****************************************************************************************
@@ -215,35 +154,59 @@ CONTAINS
 
     REAL(C_DOUBLE) :: psi(:,:)
     REAL(C_DOUBLE) :: dst(2:mm,2:nn)
-    integer :: ix, iy
+    integer :: ix, iy, j
 
-    ! discrete sine transform
-    ! careful...two calls of dst need to be divided by "normalize"
-    ! to return original vector
-    !You must use the correct type of execute function, matching the way the plan was created.
-    !Complex DFT plans should use fftw_execute_dft, Real-input (r2c) DFT plans should use use fftw_execute_dft_r2c, and real-output (c2r) DFT plans should use fftw_execute_dft_c2r.
-    !The various r2r plans should use fftw_execute_r2r. Fortunately, if you use the wrong one you will get a compile-time type-mismatch error (unlike legacy Fortran).
-    !However, note that in the MPI interface these functions are changed: fftw_execute_dft becomes fftw_mpi_execute_dft, etcetera. See Using MPI Plans.
-    !void fftw_mpi_execute_r2r(fftw_plan p, double *in, double *out);
 
-    !for serial, we can save the matrix in an easy way.
-    !in  = psi
-    !For mpi version, we need to initialize data to some function my_function(i,j)
+    alloc_local = fftw_mpi_local_size_2d(nn-1, mm-1,&
+    & MPI_COMM_WORLD, local_M, local_j_offset)
 
-    ! Input Initialization
-    do iy = 1, local_M
-         do ix = 1, nn-1
-           in(ix, iy) = psi(ix, iy)
-         end do
-    end do
+    cdata = fftw_alloc_real(alloc_local)
+    CALL c_f_pointer(cdata, in, [mm-1,local_M])
 
-    call fftw_mpi_execute_r2r(plan, in, out)
+    plan = fftw_mpi_plan_r2r_2d &
+    & (nn-1, mm-1, in, out, MPI_COMM_WORLD, FFTW_RODFT00, FFTW_RODFT00, FFTW_ESTIMATE)
 
-    call MPI_Allgatherv &
-       & (out, recv_counts(myid + 1), MPI_DOUBLE_PRECISION,&
-       & out_all, recv_counts, recv_offsets, MPI_DOUBLE_PRECISION, MPI_COMM_WORLD, ierr)
+
+    if ((.not. c_associated(plan))) then
+       write(*,*) "plan creation error!!"
+       stop
+    end if
+
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+    CALL MPI_ALLGATHER (local_M, 1, MPI_INTEGER, rcounts, 1, MPI_INTEGER,&
+     & MPI_COMM_WORLD, IERR)
+
+    displs(1) = 0
+    do j=1,nproc
+      if((j-1).ne.0)displs(j) = displs(j-1) + rcounts(j-1)
+    enddo
+
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+
+    !Input Initialization
+   do ix = 1, local_M
+     do iy = 1, mm-1
+     in(iy,ix) = psi(iy, ix + local_j_offset)
+     end do
+   end do
+
+   local_M = mm-1 * local_M
+   rcounts = mm-1 * rcounts
+   displs  = mm-1 * displs
+
+   CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+   call fftw_mpi_execute_r2r(plan, in, out)
+   CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+
+   call MPI_gatherv (out,local_M, MPI_REAL8,&
+   & out_all, rcounts, displs,MPI_REAL8,&
+   & 0, MPI_COMM_WORLD, ierr)
 
     dst = out_all
+
+    call fftw_destroy_plan(plan)
+    call fftw_mpi_cleanup()
+    call fftw_free(cdata)
 
   END function dst
 ! *****************************************************************************************
@@ -263,37 +226,76 @@ function ctci( omega )
     IMPLICIT NONE
     REAL(C_DOUBLE) :: omega(:,:)
     REAL(C_DOUBLE) :: ctci(2:mm,2:nn)
-    integer :: ix, iy
+    integer :: ix, iy, j
 
-!   in =  omega
-    do iy = 1, local_M
-      do ix = 1, nn-1
-      in(ix, iy) = omega(ix, iy)
+    alloc_local = fftw_mpi_local_size_2d(nn-1, mm-1,&
+    & MPI_COMM_WORLD, local_M, local_j_offset)
+    cdata = fftw_alloc_real(alloc_local)
+    CALL c_f_pointer(cdata, in, [mm-1,local_M])
+
+    plan = fftw_mpi_plan_r2r_2d &
+    & (nn-1, mm-1, in, out, MPI_COMM_WORLD, FFTW_RODFT00, FFTW_RODFT00, FFTW_ESTIMATE)
+
+    if ((.not. c_associated(plan))) then
+       write(*,*) "plan creation error!!"
+       stop
+    end if
+
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+    CALL MPI_ALLGATHER (local_M, 1, MPI_INTEGER, rcounts, 1, MPI_INTEGER,&
+     & MPI_COMM_WORLD, IERR)
+
+     displs(1) = 0
+     do j=1,nproc
+       if((j-1).ne.0)displs(j) = displs(j-1) + rcounts(j-1)
+     enddo
+
+     CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+    !   in =  omega
+    do ix = 1, local_M
+      do iy = 1, mm-1
+      in(iy,ix) = omega(iy, ix + local_j_offset)
       end do
     end do
 
+    local_M_n = mm-1 * local_M
+    rcounts_n = mm-1 * rcounts
+    displs_n  = mm-1 * displs
+
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
     CALL fftw_mpi_execute_r2r(plan,in,out)
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
 
-    call MPI_Allgatherv &
-       & (out, recv_counts(myid + 1), MPI_DOUBLE_PRECISION,&
-       & out_all, recv_counts, recv_offsets, MPI_DOUBLE_PRECISION, MPI_COMM_WORLD, ierr)
 
-    out_all = laminv * out_all
+    call MPI_gatherv (out,local_M_n, MPI_REAL8,&
+    & out_all, rcounts_n, displs_n, MPI_REAL8,&
+    & 0, MPI_COMM_WORLD, ierr)
+
 !    in = laminv * in
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+    out_all = laminv * out_all
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
 
-    do iy = 1, local_M
-      do ix = 1, nn-1
-      in(ix, iy) = out_all(ix, iy)
+    do ix = 1, local_M
+      do iy = 1, mm-1
+      in(iy,ix) = out_all(iy, ix + local_j_offset)
       end do
     end do
 
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
     CALL fftw_mpi_execute_r2r(plan,in,out)
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
 
-    call MPI_Allgatherv &
-       & (out, recv_counts(myid + 1), MPI_DOUBLE_PRECISION,&
-       & out_all, recv_counts, recv_offsets, MPI_DOUBLE_PRECISION, MPI_COMM_WORLD, ierr)
+    call MPI_gatherv (out,local_M_n, MPI_REAL8,&
+    & out_all, rcounts_n, displs_n, MPI_REAL8,&
+    & 0, MPI_COMM_WORLD, ierr)
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
 
     ctci =  out_all
+
+    call fftw_destroy_plan(plan)
+    call fftw_mpi_cleanup()
+    call fftw_free(cdata)
 
   END function ctci
 ! *****************************************************************************************
@@ -301,35 +303,69 @@ function ctci( omega )
     IMPLICIT NONE
     REAL(C_DOUBLE) :: omega(:,:)
     REAL(C_DOUBLE) :: ainv(2:mm,2:nn)
-    integer :: i, j
+    integer :: ix, iy, j
+
+    alloc_local = fftw_mpi_local_size_2d(nn-1, mm-1,&
+    & MPI_COMM_WORLD, local_M, local_j_offset)
+    cdata = fftw_alloc_real(alloc_local)
+    CALL c_f_pointer(cdata, in, [mm-1,local_M])
+
+
+    plan = fftw_mpi_plan_r2r_2d &
+    & (nn-1, mm-1, in, out, MPI_COMM_WORLD, FFTW_RODFT00, FFTW_RODFT00, FFTW_ESTIMATE)
+
+    if ((.not. c_associated(plan))) then
+       write(*,*) "plan creation error!!"
+       stop
+    end if
+
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+    CALL MPI_ALLGATHER (local_M, 1, MPI_INTEGER, rcounts, 1, MPI_INTEGER,&
+     & MPI_COMM_WORLD, IERR)
+
+     displs(1) = 0
+     do j=1,nproc
+       if((j-1).ne.0)displs(j) = displs(j-1) + rcounts(j-1)
+     enddo
+
+     CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
 
 !   in = omega
-    do j = 1, local_M
-      do i = 1, nn-1
-      in(i, j) = omega(i, j)
+    do ix = 1, local_M
+      do iy = 1, mm-1
+      in(iy,ix) = omega(iy, ix + local_j_offset)
       end do
     end do
 
-    CALL fftw_mpi_execute_r2r(plan,in,out)
+    local_M_n = mm-1 * local_M
+    rcounts_n = mm-1 * rcounts
+    displs_n  = mm-1 * displs
 
-    call MPI_Allgatherv &
-       & (out, recv_counts(myid + 1), MPI_DOUBLE_PRECISION,&
-       & out_all, recv_counts, recv_offsets, MPI_DOUBLE_PRECISION, MPI_COMM_WORLD, ierr)
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+    CALL fftw_mpi_execute_r2r(plan,in,out)
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+
+    call MPI_gatherv (out,local_M_n, MPI_REAL8,&
+    & out_all, rcounts_n, displs_n, MPI_REAL8,&
+    & 0, MPI_COMM_WORLD, ierr)
 
     out_all = lam1i(:,:,1) * out_all / normalize
 !    in = lam1i(:,:,1) * in / normalize
 
-    do j = 1, local_M
-      do i = 1, nn-1
-      in(i, j) = out_all(i,j)
+    do ix = 1, local_M
+      do iy = 1, mm-1
+      in(iy,ix) = out_all(iy, ix + local_j_offset)
       end do
     end do
 
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
     CALL fftw_mpi_execute_r2r(plan,in,out)
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
 
-    call MPI_Allgatherv &
-       & (out, recv_counts(myid + 1), MPI_DOUBLE_PRECISION,&
-       & out_all, recv_counts, recv_offsets, MPI_DOUBLE_PRECISION, MPI_COMM_WORLD, ierr)
+    call MPI_gatherv (out,local_M_n, MPI_REAL8,&
+    & out_all, rcounts_n, displs_n,MPI_REAL8,&
+    & 0, MPI_COMM_WORLD, ierr)
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
 
      ainv = out_all
 !    in = omega
@@ -337,43 +373,83 @@ function ctci( omega )
 !    pre_ainv = pre_ainv * lam1i(:,:,1)
 !    ainv = idst (pre_ainv)
 
+    call fftw_destroy_plan(plan)
+    call fftw_mpi_cleanup()
+    call fftw_free(cdata)
+
   END FUNCTION ainv
 ! *****************************************************************************************
-function  ddti( phi)
+function  ddti(phi)
     IMPLICIT NONE
     REAL(C_DOUBLE) :: phi(:,:)
     REAL(C_DOUBLE) :: ddti(1:mm,1:nn)
-    integer :: ix, iy
+    integer :: ix, iy, j
+
+    alloc_local_ddti = fftw_mpi_local_size_2d(nn, mm,&
+    & MPI_COMM_WORLD, local_M_ddti, local_j_offset_ddti)
+    cdata_ddti = fftw_alloc_real(alloc_local_ddti)
+    CALL c_f_pointer(cdata_ddti, in_ddti, [mm,local_M_ddti])
+
+    plan_ddti = fftw_mpi_plan_r2r_2d &
+    & (nn, mm, in_ddti, out_ddti, MPI_COMM_WORLD, FFTW_RODFT00, FFTW_RODFT00, FFTW_ESTIMATE)
+
+    if ((.not. c_associated(plan)) .or. (.not. c_associated(plan_ddti))) then
+       write(*,*) "plan creation error!!"
+       stop
+    end if
+
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+    CALL MPI_ALLGATHER (local_M_ddti, 1, MPI_INTEGER, rcounts_ddti, 1, MPI_INTEGER,&
+     & MPI_COMM_WORLD, IERR)
+
+     displs(1) = 0
+     do j=1,nproc
+       if((j-1).ne.0)displs(j) = displs_ddti(j-1) + rcounts_ddti(j-1)
+     enddo
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+
+    local_M_ddti_n = mm-1 * local_M_ddti
+    rcounts_ddti_n = mm-1 * rcounts_ddti
+    displs_ddti_n  = mm-1 * displs_ddti
 
 !    in_ddti = phi
-
-    do iy = 1, local_M_ddti
-         do ix = 1, nn
-           in_ddti(ix, iy) = phi(ix,iy)
-         end do
+    do ix = 1, local_M_ddti
+      do iy = 1, mm
+      in_ddti(iy,ix) = out_all_ddti(iy, ix + local_j_offset_ddti)
+      end do
     end do
 
-    call fftw_mpi_execute_r2r(plan_ddti, in_ddti, out_ddti)
+    local_M_ddti_n = mm-1 * local_M_ddti
+    rcounts_ddti_n = mm-1 * rcounts_ddti
+    displs_ddti_n  = mm-1 * displs_ddti
 
-    call MPI_Allgatherv &
-       & (out_ddti, recv_counts_ddti(myid + 1), MPI_DOUBLE_PRECISION,&
-       & out_all_ddti, recv_counts_ddti, recv_offsets_ddti, MPI_DOUBLE_PRECISION, MPI_COMM_WORLD, ierr)
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+    call fftw_mpi_execute_r2r(plan_ddti, in_ddti, out_ddti)
+    CALL MPI_BARRIER (MPI_COMM_WORLD, IERR)
+
+    call MPI_gatherv (out_ddti,local_M_ddti_n, MPI_REAL8,&
+    & out_all_ddti, rcounts_ddti_n, displs_ddti_n, MPI_REAL8,&
+    & 0, MPI_COMM_WORLD, ierr)
 
     out_all_ddti = laminv_ddti * out_all_ddti
 
-    do iy = 1, local_M_ddti
-         do ix = 1, nn
-           in_ddti(ix, iy) =   out_all_ddti(ix, iy)
-         end do
+    do ix = 1, local_M_ddti
+      do iy = 1, mm
+       in_ddti(iy,ix) = out_all_ddti(iy, ix + local_j_offset_ddti)
+      end do
     end do
 
     CALL fftw_mpi_execute_r2r(plan_ddti,in_ddti,out_ddti)
 
-    call MPI_Allgatherv &
-       & (out_ddti, recv_counts_ddti(myid + 1), MPI_DOUBLE_PRECISION,&
-       & out_all_ddti, recv_counts_ddti, recv_offsets_ddti, MPI_DOUBLE_PRECISION, MPI_COMM_WORLD, ierr)
+    call MPI_gatherv (out_ddti,local_M_ddti_n, MPI_REAL8,&
+    & out_all_ddti, rcounts_ddti_n, displs_ddti_n, MPI_REAL8,&
+    & 0, MPI_COMM_WORLD, ierr)
 
     ddti = out_all_ddti
+
+    call fftw_destroy_plan(plan_ddti)
+    call fftw_mpi_cleanup()
+    call fftw_free(cdata_ddti)
 
   END function ddti
 ! *****************************************************************************************
